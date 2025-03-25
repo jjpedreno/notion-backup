@@ -262,3 +262,6 @@ build/
 .env
 notion-export.zip
 credentials.json
+
+### JetBrains Fleet
+.fleet/

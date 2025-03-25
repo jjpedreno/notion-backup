@@ -1,5 +1,14 @@
 # notion-backup
 
+## Important note
+For this fork project to work, an additional step has to be taken. Please read the rest of the document and follow the instructions.
+
+After all the environment variables have been setup, add a new one to your  `.env` file:  `NOTION_FILE_TOKEN`. The value is obtained in the same manner as before, go to [notion.so](http://www.notion.so), and open the developer console with F12. Go to the **Storage** tab, section **Cookies** and copy the value from the field  `file_token`:
+
+![cookie image](./images/notion-file-token.png)
+
+---
+
 ![example workflow name](https://github.com/jckleiner/notion-backup/actions/workflows/build-run.yml/badge.svg?branch=master)
 
 > ⚠️ Notion changed their API around 12.2022 which broke the automatic login requests made by this tool to extract the 

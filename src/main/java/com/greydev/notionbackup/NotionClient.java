@@ -9,6 +9,8 @@ import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Optional;
 
 import org.apache.commons.lang3.StringUtils;
@@ -23,17 +25,19 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class NotionClient {
 
-	private static final int FETCH_DOWNLOAD_URL_RETRY_SECONDS = 5;
+	private static final int FETCH_DOWNLOAD_URL_RETRY_SECONDS = 10;
 
 	private static final String ENQUEUE_ENDPOINT = "https://www.notion.so/api/v3/enqueueTask";
 	private static final String NOTIFICATION_ENDPOINT = "https://www.notion.so/api/v3/getNotificationLogV2";
 	private static final String TOKEN_V2 = "token_v2";
+	private static final String FILE_TOKEN = "file_token";
 	private static final String EXPORT_FILE_NAME = "notion-export";
 	private static final String EXPORT_FILE_EXTENSION = ".zip";
 
 	private static final String KEY_DOWNLOADS_DIRECTORY_PATH = "DOWNLOADS_DIRECTORY_PATH";
 	private static final String KEY_NOTION_SPACE_ID = "NOTION_SPACE_ID";
 	private static final String KEY_NOTION_TOKEN_V2 = "NOTION_TOKEN_V2";
+    private static final String KEY_NOTION_FILE_TOKEN = "NOTION_FILE_TOKEN";
 	private static final String KEY_NOTION_EXPORT_TYPE = "NOTION_EXPORT_TYPE";
 	private static final String KEY_NOTION_FLATTEN_EXPORT_FILETREE = "NOTION_FLATTEN_EXPORT_FILETREE";
 	private static final String KEY_NOTION_EXPORT_COMMENTS = "NOTION_EXPORT_COMMENTS";
@@ -44,6 +48,7 @@ public class NotionClient {
 
 	private final String notionSpaceId;
 	private final String notionTokenV2;
+	private final String notionFileToken;
 	private final String exportType;
 	private final boolean flattenExportFileTree;
 	private final boolean exportComments;
@@ -59,6 +64,7 @@ public class NotionClient {
 		// both environment variables and variables defined in the .env file can be accessed this way
 		notionSpaceId = dotenv.get(KEY_NOTION_SPACE_ID);
 		notionTokenV2 = dotenv.get(KEY_NOTION_TOKEN_V2);
+        notionFileToken = dotenv.get(KEY_NOTION_FILE_TOKEN);
 		downloadsDirectoryPath = dotenv.get(KEY_DOWNLOADS_DIRECTORY_PATH);
 
 		if (StringUtils.isBlank(downloadsDirectoryPath)) {
@@ -90,6 +96,9 @@ public class NotionClient {
 		}
 		if (StringUtils.isBlank(notionTokenV2)) {
 			exit(KEY_NOTION_TOKEN_V2 + " is missing!");
+		}
+		if (StringUtils.isBlank(notionFileToken)) {
+			exit(KEY_NOTION_FILE_TOKEN + " is missing!");
 		}
 	}
 
@@ -143,6 +152,7 @@ public class NotionClient {
 	private Optional<File> downloadToFile(String url, Path downloadPath) {
 		HttpRequest request = HttpRequest.newBuilder()
 				.uri(URI.create(url))
+                .header("Cookie", FILE_TOKEN + "=" + notionFileToken)
 				.GET()
 				.build();
 
@@ -206,33 +216,40 @@ public class NotionClient {
 
 				JsonNode node = rootNode.path("recordMap");
 				node = node.path("activity");
-				node = node.fields().next().getValue();
-				node = node.path("value");
 
-				long notificationStartTimestamp = Long.parseLong(node.path("start_time").asText());
+				// Some UUIDs paths with "role: none" are empty and do not contain further values, such as "start_time""
+				//Therefore, we iterate over all nodes until we find one with a valid timestamp
+				Iterator<Map.Entry<String, JsonNode>> nodes_activity = node.fields();
+				JsonNode current_node = objectMapper.nullNode();
+				while (nodes_activity.hasNext()){
+					current_node = nodes_activity.next().getValue();
+					if(!current_node.get("role").asText().equals("none"))
+						continue;
 
-				// we want the notification newer than the export trigger timestamp
-				// since the Notion response also contains older export trigger notifications
-				if (notificationStartTimestamp < exportTriggerTimestamp) {
-					log.info("The newest export trigger notification is still not in the Notion response. " +
-							"Trying again in {} seconds...", FETCH_DOWNLOAD_URL_RETRY_SECONDS);
-					continue;
-				}
-				log.info("Found a new export trigger notification in the Notion response. " +
-						"Attempting to extract the download URL. " +
-						"Timestamp of when the export was triggered: {}. " +
-						"Timestamp of the notification: {}", exportTriggerTimestamp, notificationStartTimestamp);
+					current_node = current_node.path("value");
+					long notificationStartTimestamp = Long.parseLong(current_node.path("start_time").asText());
+					// we want the notification newer than the export trigger timestamp
+					// since the Notion response also contains older export trigger notifications
+					if (notificationStartTimestamp >= exportTriggerTimestamp) { //If we found a notification generated after we triggered the task...
+						log.info("Found a new export trigger notification in the Notion response. " +
+		 						"Attempting to extract the download URL. " +
+		 						"Timestamp of when the export was triggered: {}. " +
+		 						"Timestamp of the notification: {}", exportTriggerTimestamp, notificationStartTimestamp);
 
-				node = node.path("edits");
-				node = node.get(0);
-				JsonNode exportActivity = node.path("link");
+		 				current_node = current_node.path("edits");
+		 				current_node = current_node.get(0);
+		 				JsonNode exportActivity = current_node.path("link");
 
-				if (exportActivity.isMissingNode()) {
-					log.info("The download URL is not yet present. Trying again in {} seconds...", FETCH_DOWNLOAD_URL_RETRY_SECONDS);
-					continue;
-				}
-				return Optional.of(exportActivity.textValue());
-			}
+		 				if (exportActivity.isMissingNode()) {
+		 					log.info("The download URL is not yet present. Trying again in {} seconds...", FETCH_DOWNLOAD_URL_RETRY_SECONDS);
+		 					continue;
+		 				}
+		 				return Optional.of(exportActivity.textValue());
+					}//end if
+				}//end while
+				log.info("The newest export trigger notification is still not in the Notion response. " +
+								"Trying again in {} seconds...", FETCH_DOWNLOAD_URL_RETRY_SECONDS);
+			}//end for
 		}
 		catch (Exception e) {
 			log.error("An exception occurred: ", e);
